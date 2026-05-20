@@ -1,6 +1,6 @@
 {
   "framework": null,
-  "buildCommand": null,
-  "outputDirectory": ".",
-  "cleanUrls": true
+  "buildCommand": "echo done",
+  "installCommand": "echo done",
+  "outputDirectory": "."
 }
