@@ -1,0 +1,7 @@
+# Profil Chrome contenant la session Stripe — ne jamais commiter.
+.stripe-profile/
+node_modules/
+package-lock.json
+stripe-web/
+stripe-crawl/
+stripe-captures/

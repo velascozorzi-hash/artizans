@@ -1,0 +1,16 @@
+{
+  "name": "stripe-capture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture des écrans du dashboard Stripe (web) et de l'app Stripe iOS.",
+  "scripts": {
+    "login": "node crawl-web.mjs --login",
+    "crawl:web": "node crawl-web.mjs",
+    "crawl:ios": "node crawl-ios.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "webdriverio": "^9.0.0"
+  }
+}
