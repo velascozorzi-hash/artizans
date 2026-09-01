@@ -1,0 +1,13 @@
+{
+  "name": "ios-stripe-capture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture des écrans de l'app Stripe iOS depuis un Mac (Appium/XCUITest).",
+  "scripts": {
+    "crawl": "node crawl.mjs"
+  },
+  "dependencies": {
+    "webdriverio": "^9.0.0"
+  }
+}
