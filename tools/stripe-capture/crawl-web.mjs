@@ -15,16 +15,23 @@
 //   3. Un garde réseau annule toute requête d'écriture (DELETE, ou
 //      POST/PUT/PATCH vers une URL d'action) avant qu'elle parte.
 //
-//   node crawl-web.mjs --login              # une fois : connexion manuelle
+//   node crawl-web.mjs --import-session     # reprend la session de ton Chrome
+//   node crawl-web.mjs --login              # ou : connexion manuelle
+//   node crawl-web.mjs --check              # vérifie que la session passe
 //   node crawl-web.mjs ~/Desktop/stripe-web # puis : crawl
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, cp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { chromium } from 'playwright';
 
 const args = process.argv.slice(2);
 const LOGIN_MODE = args.includes('--login');
+const IMPORT_MODE = args.includes('--import-session');
+const CHECK_MODE = args.includes('--check');
+const CRAWL_MODE = !LOGIN_MODE && !IMPORT_MODE && !CHECK_MODE;
 const OUT_DIR = path.resolve(args.find((a) => !a.startsWith('--')) ?? './stripe-web');
 // Profil Chrome dédié : Chrome 136+ refuse le pilotage du profil par défaut,
 // et ça évite de toucher à ta session personnelle.
@@ -45,6 +52,74 @@ const visited = new Set();
 const manifest = [];
 const blocked = [];
 let shotCount = 0;
+
+// Emplacement du profil Chrome personnel, selon l'OS.
+function chromeUserDataDir() {
+  if (process.env.CHROME_USER_DATA) return process.env.CHROME_USER_DATA;
+  const home = os.homedir();
+  switch (process.platform) {
+    case 'win32':
+      return path.join(
+        process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local'),
+        'Google', 'Chrome', 'User Data',
+      );
+    case 'darwin':
+      return path.join(home, 'Library', 'Application Support', 'Google', 'Chrome');
+    default:
+      return path.join(home, '.config', 'google-chrome');
+  }
+}
+
+// Recopie le strict minimum du profil personnel (cookies + clé de
+// déchiffrement) dans le profil dédié, pour hériter de la session Stripe déjà
+// ouverte sans repasser par la connexion — que Stripe bloque sur un navigateur
+// piloté. Chrome doit être complètement fermé : les fichiers sont verrouillés
+// tant qu'il tourne.
+async function importChromeSession() {
+  const source = chromeUserDataDir();
+  const profile = process.env.CHROME_PROFILE ?? 'Default';
+  const sourceProfile = path.join(source, profile);
+
+  if (!existsSync(sourceProfile)) {
+    throw new Error(
+      `Profil Chrome introuvable : ${sourceProfile}\n` +
+        'Indique-le à la main avec CHROME_USER_DATA=... et CHROME_PROFILE=...',
+    );
+  }
+
+  // Le profil dédié est recréé de zéro : un reste d'import précédent peut
+  // masquer un cookie périmé et donner une session à moitié valide.
+  await rm(PROFILE_DIR, { recursive: true, force: true });
+  await mkdir(path.join(PROFILE_DIR, 'Default', 'Network'), { recursive: true });
+
+  // 'Local State' porte la clé qui déchiffre les cookies : sans lui, ils sont
+  // illisibles. Les autres fichiers sont optionnels selon la version de Chrome.
+  const files = [
+    ['Local State', 'Local State'],
+    [path.join(profile, 'Network', 'Cookies'), path.join('Default', 'Network', 'Cookies')],
+    [path.join(profile, 'Cookies'), path.join('Default', 'Cookies')],
+    [path.join(profile, 'Preferences'), path.join('Default', 'Preferences')],
+  ];
+
+  let copied = 0;
+  for (const [from, to] of files) {
+    const src = path.join(source, from);
+    if (!existsSync(src)) continue;
+    try {
+      await cp(src, path.join(PROFILE_DIR, to));
+      copied += 1;
+      console.log(`  copié : ${from}`);
+    } catch (error) {
+      console.log(`  ⨯ ${from} illisible (${error.code ?? error.message})`);
+    }
+  }
+
+  if (copied === 0) {
+    throw new Error('Aucun fichier copié — Chrome est probablement encore ouvert.');
+  }
+  console.log(`\nSession importée depuis ${sourceProfile}`);
+  console.log('Vérifie avec : node crawl-web.mjs --check');
+}
 
 function slug(text) {
   return (text || 'page')
@@ -174,11 +249,31 @@ async function visit(page, url, label, depth) {
   return internalLinks(page);
 }
 
+// L'import recopie des fichiers dans PROFILE_DIR : il doit se faire avant que
+// Chrome ne l'ouvre, donc avant tout lancement de navigateur.
+if (IMPORT_MODE) {
+  console.log('Import de la session depuis ton profil Chrome personnel.');
+  console.log('Chrome doit être complètement fermé (vérifie le gestionnaire des tâches).\n');
+  await importChromeSession();
+  process.exit(0);
+}
+
 const context = await chromium.launchPersistentContext(PROFILE_DIR, {
   headless: false,
   channel: 'chrome',
   viewport: VIEWPORT,
-  args: ['--disable-blink-features=AutomationControlled'],
+  args: [
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--no-first-run',
+    '--no-default-browser-check',
+  ],
+});
+
+// Stripe repère les navigateurs pilotés, surtout sur la page de connexion.
+// Effacer ce drapeau ne rend pas invisible, mais évite le refus le plus basique.
+await context.addInitScript(() => {
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 });
 
 const page = context.pages()[0] ?? (await context.newPage());
@@ -204,6 +299,20 @@ try {
     await rl.question('Appuie sur Entrée ici une fois le dashboard affiché… ');
     rl.close();
     console.log(`Session enregistrée dans ${PROFILE_DIR}. Relance sans --login pour crawler.`);
+  } else if (CHECK_MODE) {
+    await page.goto(START_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForTimeout(4000);
+    const url = page.url();
+    if (/login|signin|authenticate/i.test(url)) {
+      console.log(`\n⨯ Session absente : Stripe renvoie vers ${url}`);
+      console.log('  Reconnecte-toi dans ton Chrome habituel, ferme-le, puis relance --import-session.');
+    } else {
+      console.log(`\n✓ Session valide — dashboard atteint : ${url}`);
+      console.log('  Tu peux lancer le crawl.');
+    }
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await rl.question('Appuie sur Entrée pour fermer la fenêtre… ');
+    rl.close();
   } else {
     await mkdir(OUT_DIR, { recursive: true });
     console.log(`Crawl du dashboard Stripe → ${OUT_DIR}`);
@@ -238,7 +347,7 @@ try {
     }
   }
 } finally {
-  if (!LOGIN_MODE) {
+  if (CRAWL_MODE) {
     await writeFile(
       path.join(OUT_DIR, 'index.json'),
       JSON.stringify(

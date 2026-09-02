@@ -26,18 +26,36 @@ liste. Écrit `index.json` décrivant tout ce qui a été visité et tout ce qui
 été bloqué.
 
 ```bash
-npx playwright install chrome    # une fois
+npx playwright install chrome       # une fois
 
-node crawl-web.mjs --login       # une fois : tu te connectes à la main (2FA incluse)
+node crawl-web.mjs --import-session # reprend la session de ton Chrome
+node crawl-web.mjs --check          # vérifie qu'elle passe
 node crawl-web.mjs ~/Desktop/stripe-web
 ```
 
-Le `--login` ouvre un Chrome dans un **profil dédié** (`.stripe-profile/`) : tu
-t'y connectes une seule fois, la session y reste pour les runs suivants. Un
-profil séparé est obligatoire — Chrome 136+ refuse de piloter le profil par
-défaut — et ça évite de toucher à ta session personnelle.
+### Obtenir une session — deux voies
 
-Ne commite jamais `.stripe-profile/` : il contient tes cookies de session.
+Le script travaille dans un **profil Chrome dédié** (`.stripe-profile/`), séparé
+de ta session personnelle. Ce profil doit contenir une session Stripe valide.
+
+**`--import-session` (recommandé).** Recopie les cookies de ton profil Chrome
+personnel dans le profil dédié : tu es déjà connecté, donc aucune connexion à
+refaire. **Chrome doit être complètement fermé** pendant l'import — les fichiers
+de cookies sont verrouillés tant qu'il tourne. Vérifie ensuite avec `--check`.
+
+```bash
+# Si ton profil n'est pas le profil par défaut :
+CHROME_PROFILE="Profile 1" node crawl-web.mjs --import-session
+```
+
+**`--login`.** Ouvre une fenêtre où tu te connectes à la main. Stripe détecte
+souvent les navigateurs pilotés et bloque l'envoi du code 2FA (« An unknown
+error has occurred », SMS jamais reçu) — d'où `--import-session` en premier
+choix.
+
+Un profil séparé est de toute façon obligatoire : Chrome 136+ refuse de piloter
+le profil par défaut. Ne commite jamais `.stripe-profile/`, il contient tes
+cookies de session.
 
 ### Réglages
 
@@ -48,6 +66,8 @@ Ne commite jamais `.stripe-profile/` : il contient tes cookies de session.
 | `MAX_SCROLLS` | `25` | Paliers de scroll max par page |
 | `START_URL` | `.../dashboard` | Point de départ |
 | `PROFILE_DIR` | `./.stripe-profile` | Profil Chrome à réutiliser |
+| `CHROME_PROFILE` | `Default` | Profil personnel à importer (`Profile 1`, …) |
+| `CHROME_USER_DATA` | auto | Dossier « User Data » de Chrome, si non standard |
 
 ```bash
 MAX_PAGES=400 MAX_ROWS=10 node crawl-web.mjs ~/Desktop/stripe-web
